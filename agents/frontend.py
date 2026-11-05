@@ -12,7 +12,10 @@ Define campos, validaciones, acciones y mensajes. \
 Cubre estados de carga, vacío, éxito y error, y evita envíos duplicados. \
 Conserva etiquetas accesibles, navegación por teclado y foco visible. \
 Incluye cómo comprobar el recorrido y sus errores. \
-Entrega frontend_spec.md y código Angular con el formato de extracción que ya exige build_task."
+Entrega frontend_spec.md y código Angular con el formato de extracción que ya exige build_task. \
+ALCANCE: si el Issue o el plan de Arquitectura indican que el frontend no cambia (por ejemplo una actualización de dependencias del API), \
+NO entregues componentes, servicios ni herramientas nuevas: frontend_spec.md debe decir 'Sin cambios en el frontend', \
+justificarlo con los criterios del Issue y no incluir ningún bloque de código. Nunca añadas entregables fuera del alcance del Issue."
 agent = Agent(role='Desarrollador frontend Angular del portal de autenticación BCP',
               goal="Implementar en Angular el recorrido de usuario del Issue (formulario de login/autenticación) "
                    "según el contrato de API aprobado, cumpliendo sus criterios de aceptación, con estados de "

@@ -59,11 +59,11 @@ class WorkflowTests(unittest.TestCase):
             if key == "data":
                 return "Approved data contract.\n```sql\n-- migration.sql\nCREATE TABLE accounts (id INTEGER PRIMARY KEY);\n```"
             if key == "backend":
-                return "```java\n// BalanceService.java\npackage pe.bcp.login.service;\npublic class BalanceService {}\n```"
+                return "```python\n# api/app/balance_service.py\nclass BalanceService:\n    pass\n```\n```text\n# api/requirements.txt\nfastapi\n```"
             if key == "frontend":
                 return "```typescript\n// balance.service.ts\nexport class BalanceService {}\n```"
             if key == "testing":
-                return "Coverage report. NO EJECUTADO.\n```java\n// BalanceTest.java\npackage pe.bcp.login;\npublic class BalanceTest {}\n```"
+                return "Coverage report. NO EJECUTADO.\n```python\n# api/tests/test_balance.py\ndef test_balance():\n    assert True\n```"
             return f"Approved output from {key}. No model was called."
 
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
@@ -119,12 +119,9 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual([key for key, _ in calls], expected)
             for key, _, _, spec, _ in steps:
                 self.assertTrue((output / "specs" / spec).is_file(), key)
-            self.assertTrue(
-                (
-                    output
-                    / "backend-quarkus/src/test/java/pe/bcp/login/BalanceTest.java"
-                ).is_file()
-            )
+            self.assertTrue((output / "api/tests/test_balance.py").is_file())
+            self.assertTrue((output / "api/app/balance_service.py").is_file())
+            self.assertTrue((output / "api/requirements.txt").is_file())
             chapter_prompt = calls[-1][1]
             self.assertIn("Coverage report", chapter_prompt)
             self.assertIn("Approved output from security", chapter_prompt)

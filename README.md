@@ -3,7 +3,7 @@
 Los agentes parten con instrucciones básicas. Sigue [Mejora tu agente](MEJORA_TU_AGENTE.md) para completar el ejercicio y consultar resultados desde el portal.
 
 Base de trabajo del Lab 4, S1. Lee una funcionalidad del backlog mediante MCP Projects
-y genera una solución Quarkus 3.x y Angular 17 con seis agentes de CrewAI, o siete cuando el equipo activa Datos y persistencia.
+y genera una solución FastAPI (Python) y Angular 17 con seis agentes de CrewAI, o siete cuando el equipo activa Datos y persistencia.
 Cada agente tiene su definición y la tarea en un archivo propio.
 
 ## Editar tu agente
@@ -89,16 +89,17 @@ Los artefactos se guardan en `output/`:
 - `specs/testing_report.md`: casos, tests y comandos. Los resultados quedan pendientes de ejecución humana.
 - `specs/security_report.md`: hallazgos y verificaciones de seguridad.
 - `specs/chapter_review.md`: revisión final del Chapter.
-- `backend-quarkus/` y `frontend-angular/`: código extraído y configuración de arranque.
+- `api/` y `frontend-angular/`: código extraído y configuración de arranque.
 - `.checkpoint.json`: estado local de la ejecución.
 
 ## Probar la solución generada
 
-Con Java 17 o superior y Maven instalados, abre una terminal en `output/backend-quarkus`:
+Con Python 3.10 o superior, abre una terminal en `output/api`:
 
 ```sh
-mvn test
-mvn compile quarkus:dev
+pip install -r requirements.txt
+pytest
+uvicorn app.main:app --reload
 ```
 
 Con Node.js 18.19 o superior y npm, abre otra terminal en `output/frontend-angular`:
@@ -108,7 +109,7 @@ npm install
 npm start
 ```
 
-La API se inicia en `http://localhost:8080` y Angular en `http://localhost:4200`.
+La API se inicia en `http://localhost:8000` y Angular en `http://localhost:4200`.
 Revisa los comandos adicionales del informe de pruebas y registra sus resultados reales.
 
 ## Verificar cambios en los agentes

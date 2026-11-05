@@ -7,7 +7,7 @@ Flujo:
        s = aprobar y continuar
        n = rechazar y abortar
        r = reintentar el mismo paso
-  4. Al aprobar: guarda el artefacto inmediatamente (spec .md / código .java .ts .sql)
+  4. Al aprobar: guarda el artefacto inmediatamente (spec .md / código .py .ts .sql)
      y registra el checkpoint en output/.checkpoint.json.
   5. Al volver a ejecutar: carga el checkpoint y omite los pasos ya aprobados,
      inyectando sus outputs como contexto para los pasos restantes.
@@ -19,7 +19,7 @@ Estructura generada en output/:
     backend_spec.md
     frontend_spec.md
     chapter_review.md
-  backend-quarkus/src/main/java/pe/bcp/<feature>/...
+  api/app/*.py  api/tests/*.py  api/requirements.txt
   frontend-angular/src/app/<feature>/...
   db/schema.sql  seed.sql
 """
@@ -78,116 +78,11 @@ from hex_archetype import HEX_PROMPT_PREFIX
 VERBOSE_MCP_TOOLS = False
 
 # ── Scaffolding determinista para Backend y Frontend ────────────────
-QUARKUS_POM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-    <groupId>pe.bcp</groupId>
-    <artifactId>backend-quarkus</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-
-    <properties>
-        <compiler-plugin.version>3.12.1</compiler-plugin.version>
-        <maven.compiler.release>17</maven.compiler.release>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
-        <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
-        <quarkus.platform.version>3.8.3</quarkus.platform.version>
-    </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>${quarkus.platform.group-id}</groupId>
-                <artifactId>${quarkus.platform.artifact-id}</artifactId>
-                <version>${quarkus.platform.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
-    <dependencies>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-spring-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-spring-di</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-spring-data-jpa</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-resteasy-reactive-jackson</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-hibernate-validator</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-jdbc-h2</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-jdbc-postgresql</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.mindrot</groupId>
-            <artifactId>jbcrypt</artifactId>
-            <version>0.4</version>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-junit5</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>${quarkus.platform.group-id}</groupId>
-                <artifactId>quarkus-maven-plugin</artifactId>
-                <version>${quarkus.platform.version}</version>
-                <extensions>true</extensions>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>build</goal>
-                            <goal>generate-code</goal>
-                            <goal>generate-code-tests</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
-    </build>
-</project>
-"""
-
-QUARKUS_APP_PROPS_TEMPLATE = """# BCP Quarkus Backend Configuration
-quarkus.application.name=bcp-login-service
-quarkus.http.port=8080
-
-# CORS habilitado para el frontend Angular local
-quarkus.http.cors=true
-quarkus.http.cors.origins=http://localhost:4200,http://127.0.0.1:4200
-quarkus.http.cors.headers=accept, authorization, content-type, x-requested-with
-quarkus.http.cors.methods=GET, POST, PUT, DELETE, OPTIONS
-
-# Base de datos H2 en memoria para pruebas instantáneas sin configuración externa
-quarkus.datasource.db-kind=h2
-quarkus.datasource.jdbc.url=jdbc:h2:mem:logindb;DB_CLOSE_DELAY=-1
-quarkus.hibernate-orm.database.generation=drop-and-create
-quarkus.hibernate-orm.log.sql=true
-quarkus.log.level=INFO
+FASTAPI_REQUIREMENTS_TEMPLATE = """fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pytest>=8.0
+httpx>=0.27
 """
 
 ANGULAR_PACKAGE_JSON = """{
@@ -342,14 +237,14 @@ bootstrapApplication(AppComponent, {
 """
 
 # El codigo de aplicacion (app.component.ts, app.routes.ts, el .css del
-# componente y UserRepository.java) lo genera el modelo: depende del feature.
+# componente y los módulos de api/app/*.py) lo genera el modelo: depende del feature.
 # Aca solo queda el andamiaje de build, que ningun agente tiene que escribir.
 
 
 def ensure_scaffolding(output_dir: Path) -> None:
     """
-    Escribe sólo el andamiaje de build: pom.xml y application.properties de
-    Quarkus, y package.json / angular.json / tsconfig / index.html / main.ts de
+    Escribe sólo el andamiaje de build: api/requirements.txt de FastAPI, y
+    package.json / angular.json / tsconfig / index.html / main.ts de
     Angular. Nada de esto describe el feature, así que no se le pide al modelo.
 
     El código de aplicación —entidad, repositorio, servicio, componentes, rutas
@@ -357,18 +252,12 @@ def ensure_scaffolding(output_dir: Path) -> None:
     agente no lo emite, el proyecto queda incompleto a propósito: es la señal
     de que el paso falló, no algo que el andamiaje deba tapar.
     """
-    # 1. Backend Quarkus
-    pom_path = output_dir / "backend-quarkus" / "pom.xml"
-    if not pom_path.exists():
-        pom_path.parent.mkdir(parents=True, exist_ok=True)
-        pom_path.write_text(QUARKUS_POM_TEMPLATE, encoding="utf-8")
-        print("  🏗️ Scaffolding Backend: generado pom.xml (Quarkus 3.x)")
-
-    app_props_path = output_dir / "backend-quarkus" / "src" / "main" / "resources" / "application.properties"
-    if not app_props_path.exists():
-        app_props_path.parent.mkdir(parents=True, exist_ok=True)
-        app_props_path.write_text(QUARKUS_APP_PROPS_TEMPLATE, encoding="utf-8")
-        print("  🏗️ Scaffolding Backend: generado application.properties (CORS + H2)")
+    # 1. Backend FastAPI
+    req_path = output_dir / "api" / "requirements.txt"
+    if not req_path.exists():
+        req_path.parent.mkdir(parents=True, exist_ok=True)
+        req_path.write_text(FASTAPI_REQUIREMENTS_TEMPLATE, encoding="utf-8")
+        print("  🏗️ Scaffolding Backend: generado api/requirements.txt (FastAPI)")
 
     # 2. Frontend Angular 17
     front_dir = output_dir / "frontend-angular"
@@ -460,6 +349,23 @@ def save_checkpoint(data: dict) -> None:
 
 # ── Output helpers ─────────────────────────────────────────────────
 
+def python_destination(raw_name: str) -> str:
+    """Ruta destino de un archivo Python/requirements del API FastAPI, siempre bajo api/."""
+    parts = [p for p in raw_name.replace("\\", "/").split("/") if p not in ("", ".")]
+    name = parts[-1]
+    if ".." in parts:
+        parts = [name]
+    if len(parts) > 1 and parts[0] == "api":
+        return "/".join(parts)
+    if len(parts) > 1 and parts[0] in ("app", "tests"):
+        return "api/" + "/".join(parts)
+    if name == "requirements.txt":
+        return "api/requirements.txt"
+    if name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py"):
+        return f"api/tests/{name}"
+    return f"api/app/{name}"
+
+
 def extract_and_save_code(text) -> list[str]:
     """Extrae bloques de código del output del LLM y los guarda en sus carpetas correspondientes."""
     text_str = str(getattr(text, "raw", text) or "")
@@ -468,7 +374,7 @@ def extract_and_save_code(text) -> list[str]:
 
     # Patrón para bloques ``` con o sin lenguaje
     code_block_pattern = re.compile(
-        r"(?:(?:archivo|file|fichero|clase|class|componente)?[:\s*#/-]*[`\"]?([a-zA-Z0-9_.\-/]+\.(?:java|ts|html|css|sql|xml|properties))[`\"]?[^\n]*\n)?"
+        r"(?:(?:archivo|file|fichero|clase|class|componente)?[:\s*#/-]*[`\"]?([a-zA-Z0-9_.\-/]+\.(?:java|py|ts|html|css|sql|xml|properties|txt))[`\"]?[^\n]*\n)?"
         r"```(?:[a-zA-Z0-9_\-]+)?\n(.*?)```",
         re.DOTALL | re.IGNORECASE,
     )
@@ -486,7 +392,7 @@ def extract_and_save_code(text) -> list[str]:
             lines = code.split("\n")[:5]
             for l in lines:
                 m_line = re.search(
-                    r"(?:(?:\/\/|\/\*|#|<!--|--)\s*|\b)([a-zA-Z0-9_.\-/]+\.(?:java|ts|html|css|sql|xml|properties))\b",
+                    r"(?:(?:\/\/|\/\*|#|<!--|--)\s*|\b)([a-zA-Z0-9_.\-/]+\.(?:java|py|ts|html|css|sql|xml|properties|txt))\b",
                     l,
                     re.IGNORECASE,
                 )
@@ -519,11 +425,14 @@ def extract_and_save_code(text) -> list[str]:
         if not target_name:
             continue
 
-        # Extraer solo el nombre base del archivo
-        target_name = Path(target_name.strip()).name
+        # Extraer solo el nombre base del archivo (el Python conserva su ruta bajo api/)
+        raw_name = target_name.strip()
+        target_name = Path(raw_name).name
 
         # Mapeo a ruta destino
         dest_rel = FILE_MAP.get(target_name)
+        if not dest_rel and (target_name.endswith(".py") or target_name == "requirements.txt"):
+            dest_rel = python_destination(raw_name)
         if not dest_rel:
             lname = target_name.lower()
             if target_name.endswith(".java"):
@@ -1051,7 +960,7 @@ def main():
     print("✅ TODOS LOS PASOS APROBADOS")
     print("=" * 60)
     print("  output/specs/            → " + " · ".join(step[3] for step in steps))
-    print("  output/backend-quarkus/  → archivos .java extraídos")
+    print("  output/api/              → archivos .py extraídos (FastAPI)")
     print("  output/frontend-angular/ → archivos .ts/.html extraídos")
     print("  output/db/               → .sql extraídos")
     print("=" * 60)
