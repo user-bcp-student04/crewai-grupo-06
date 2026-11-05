@@ -7,7 +7,7 @@ LABEL = 'Desarrollador frontend'
 SPEC_FILE = 'frontend_spec.md'
 EXTRACT_CODE = True
 
-INSTRUCTIONS = "Realiza la tarea de tu rol."
+INSTRUCTIONS = "Implementa la interacción y el consumo de API, con estados de carga, vacío, error y accesibilidad."
 agent = Agent(role='Desarrollador frontend', goal="Completar la tarea asignada.",
               backstory="Eres un integrante del equipo.", llm=llm,
               verbose=True, allow_delegation=False)
