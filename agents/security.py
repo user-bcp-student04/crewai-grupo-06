@@ -8,8 +8,12 @@ SPEC_FILE = 'security_report.md'
 EXTRACT_CODE = False
 
 INSTRUCTIONS = "Realiza la tarea de tu rol."
-agent = Agent(role='Revisor de seguridad', goal="Completar la tarea asignada.",
-              backstory="Eres un integrante del equipo.", llm=llm,
+agent = Agent(role='Revisor de seguridad de aplicaciones',
+              goal="Revisar autenticación, autorización, validación de entradas, manejo de secretos, "
+                   "datos sensibles e inyección, y entregar hallazgos priorizados, correcciones "
+                   "concretas y comprobaciones para verificarlas.",
+              backstory="Eres un Quality Engineer del equipo, encargado de cumplir los estándares "
+                        "de calidad y de verificar que cada entrega cumpla los requisitos de seguridad.", llm=llm,
               verbose=True, allow_delegation=False)
 
 
