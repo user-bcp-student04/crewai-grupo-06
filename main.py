@@ -746,7 +746,7 @@ def hitl_approve(step_name: str, output: str) -> tuple[str, str]:
 
 # ── Contexto acumulado ─────────────────────────────────────────────
 
-def _ctx_snippet(text: str, max_chars: int = 8000) -> str:
+def _ctx_snippet(text: str, max_chars: int = 40000) -> str:
     """Recorta el output a max_chars para inyectarlo como contexto."""
     text_clean = str(text or "").strip()
     if len(text_clean) <= max_chars:
