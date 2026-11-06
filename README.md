@@ -92,6 +92,20 @@ Los artefactos se guardan en `output/`:
 - `api/` y `frontend-angular/`: código extraído y configuración de arranque.
 - `.checkpoint.json`: estado local de la ejecución.
 
+## Paso final: pull request
+
+Tras el Chapter, el flujo muestra el veredicto y los archivos, y pide aprobación
+humana (`s`/`n`) para abrir un PR en borrador en `<GITHUB_OWNER>/ai-labs`
+(`PR_REPO` y `PR_BASE_BRANCH` lo cambian). Requiere `gh auth login`. Si tu cuenta
+no tiene permiso de push, la rama se publica en tu fork. El PR lleva el código
+generado (`api/`, `frontend-angular/` → `web/`, `db/`) y las specs en
+`docs/crewai/<feature>/`; el andamiaje de build no se incluye. El enlace queda en
+el checkpoint para no abrir el PR dos veces.
+
+Si un paso falla o tarda demasiado (`COPILOT_TIMEOUT`, `COPILOT_IDLE_TIMEOUT`), el
+flujo ofrece reintentarlo (`r`) o detenerse (`n`). Ctrl-C cancela el paso en curso;
+un segundo Ctrl-C sale de inmediato.
+
 ## Probar la solución generada
 
 Con Python 3.10 o superior, abre una terminal en `output/api`:

@@ -19,7 +19,8 @@ class CopilotLLM(BaseLLM):
     """Synchronous CrewAI wrapper around the async Copilot SDK."""
 
     llm_type: str = "copilot"
-    timeout: float = 600.0
+    # None: usa COPILOT_TIMEOUT (900 s por defecto) en lab_copilot.runtime.
+    timeout: float | None = None
 
     def call(
         self,
