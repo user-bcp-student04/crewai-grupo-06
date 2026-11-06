@@ -55,13 +55,16 @@ for _log in ("opentelemetry", "crewai.telemetry", "urllib3", "requests"):
 import re
 import json
 import time
+import signal
 import threading
 import textwrap
 from pathlib import Path
 from crewai import Crew, Process
 
+from lab_copilot import runtime as copilot_runtime
+
 from crew.workflow import build_tasks, include_data, workflow_steps
-from agents.architect import agent as architect_agent
+from crew import publish_pr
 
 # ── MCP clients ────────────────────────────────────────────────────
 from mcp_projects import (
@@ -70,7 +73,6 @@ from mcp_projects import (
     list_project_items,
     get_feature_from_item,
 )
-from hex_archetype import HEX_PROMPT_PREFIX
 
 # ── Flag de verbosidad MCP ─────────────────────────────────────────
 # True  → muestra el detalle de cada herramienta al arrancar
@@ -289,29 +291,6 @@ OUTPUT_DIR.mkdir(exist_ok=True)   # lo necesita save_checkpoint()
 # ensure_scaffolding() NO se llama aquí: escribiría en output/ con sólo importar
 # el módulo, antes del MCP, del feature elegido y del primer agente.
 
-# ── Mapa archivo → ruta destino ────────────────────────────────────
-FILE_MAP = {
-    "User.java":               "backend-quarkus/src/main/java/pe/bcp/login/model/User.java",
-    "LoginRequest.java":       "backend-quarkus/src/main/java/pe/bcp/login/dto/LoginRequest.java",
-    "AuthResponse.java":       "backend-quarkus/src/main/java/pe/bcp/login/dto/AuthResponse.java",
-    "AuthService.java":        "backend-quarkus/src/main/java/pe/bcp/login/service/AuthService.java",
-    "AuthResource.java":       "backend-quarkus/src/main/java/pe/bcp/login/resource/AuthResource.java",
-    "pom.xml":                 "backend-quarkus/pom.xml",
-    "application.properties":  "backend-quarkus/src/main/resources/application.properties",
-    "models.ts":               "frontend-angular/src/app/auth/models.ts",
-    "auth.service.ts":         "frontend-angular/src/app/auth/auth.service.ts",
-    "auth.guard.ts":           "frontend-angular/src/app/auth/auth.guard.ts",
-    "login.component.ts":      "frontend-angular/src/app/auth/login.component.ts",
-    "login.component.html":    "frontend-angular/src/app/auth/login.component.html",
-    "auth.interceptor.ts":     "frontend-angular/src/app/core/auth.interceptor.ts",
-    "app.component.ts":        "frontend-angular/src/app/app.component.ts",
-    "app.routes.ts":           "frontend-angular/src/app/app.routes.ts",
-    "login.component.css":     "frontend-angular/src/app/auth/login.component.css",
-    "UserRepository.java":     "backend-quarkus/src/main/java/pe/bcp/login/repository/UserRepository.java",
-    "schema.sql":              "db/schema.sql",
-    "seed.sql":                "db/seed.sql",
-}
-
 # ── Checkpoint ─────────────────────────────────────────────────────
 
 def load_checkpoint() -> dict:
@@ -349,6 +328,96 @@ def save_checkpoint(data: dict) -> None:
 
 # ── Output helpers ─────────────────────────────────────────────────
 
+# ── Extracción de código ───────────────────────────────────────────
+# Cada bloque ``` del output se guarda como archivo solo si su ruta es
+# explícita (comentario de ruta en la primera línea, atributo del fence o
+# línea-título justo antes del bloque) o, como último recurso, deducible del
+# contenido. Los bloques de comandos y árboles de carpetas nunca se guardan.
+
+CODE_EXTENSIONS = (
+    "py", "ts", "html", "css", "scss", "sql", "txt", "json",
+    "toml", "ini", "cfg", "yaml", "yml",
+)
+_EXT = "|".join(CODE_EXTENSIONS)
+_PATH = rf"[A-Za-z0-9_.\-/\\]+\.(?:{_EXT})"
+KNOWN_ROOTS = ("api/", "frontend-angular/", "db/")
+SHELL_LANGS = {
+    "bash", "sh", "shell", "zsh", "console", "terminal", "powershell", "ps1",
+    "pwsh", "cmd", "bat", "batch", "http", "curl",
+}
+ANGULAR_ROOT_FILES = {"app.component.ts", "app.component.html", "app.component.css",
+                      "app.routes.ts", "app.config.ts"}
+PYTHON_PROJECT_FILES = {"pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", ".coveragerc"}
+
+_FENCE_OPEN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([^`\n]*)$")
+# Primera línea del bloque formada SOLO por un comentario con la ruta.
+_PATH_COMMENT = re.compile(
+    rf"^\s*(?:#|//|--|/\*|<!--|;)\s*(?:(?:archivo|file|fichero|ruta|path)\s*:\s*)?"
+    rf"[`\"']?({_PATH})[`\"']?\s*(?:\*/|-->)?\s*$",
+    re.IGNORECASE,
+)
+# Línea-título previa al bloque: `ruta`, **ruta**, ### ruta, Archivo: ruta, 1. ruta:
+_PATH_HEADING = re.compile(
+    rf"^\s*(?:#{{1,6}}\s*)?(?:[-*+]\s+)?(?:\d+[.)]\s*)?(?:\*\*|__)?\s*"
+    rf"(?:(?:archivo|file|fichero|ruta|path)\s*:?\s*)?(?:\*\*|__)?\s*`?({_PATH})`?\s*(?:\*\*|__)?"
+    rf"\s*(?:\([^)]*\))?\s*:?\s*(?:\*\*|__)?\s*$",
+    re.IGNORECASE,
+)
+_FENCE_ATTR = re.compile(rf"(?:title|file|filename|name|path)\s*=\s*[\"']?({_PATH})", re.IGNORECASE)
+_FENCE_BARE_PATH = re.compile(rf"(?:^|\s)({_PATH})(?:\s|$)")
+
+
+def _parse_code_blocks(text: str) -> list[dict]:
+    """Separa bloques ``` / ~~~ respetando longitud y tipo de fence (CommonMark)."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    blocks, i, prev = [], 0, ""
+    while i < len(lines):
+        m = _FENCE_OPEN.match(lines[i])
+        if not m:
+            if lines[i].strip():
+                prev = lines[i]
+            i += 1
+            continue
+        fence, info = m.group(1), m.group(2).strip()
+        closer = re.compile(rf"^[ \t]{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$")
+        body, j = [], i + 1
+        while j < len(lines) and not closer.match(lines[j]):
+            body.append(lines[j])
+            j += 1
+        blocks.append({"info": info, "lang": (info.split() or [""])[0].lower(),
+                       "body": "\n".join(body), "prev": prev})
+        prev, i = "", j + 1
+    return blocks
+
+
+def _unwrap_markdown(text: str) -> str:
+    """Quita un ```markdown que envuelva toda la respuesta (con fences anidados dentro)."""
+    stripped = text.strip()
+    m = re.match(r"^(`{3,}|~{3,})[ \t]*(?:markdown|md)[ \t]*\n", stripped, re.IGNORECASE)
+    if m and stripped.endswith(m.group(1)):
+        return stripped[m.end():len(stripped) - len(m.group(1))]
+    return text
+
+
+def _kebab(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "-", name).lower()
+
+
+def _guess_name(lang: str, code: str) -> str | None:
+    """Último recurso cuando el bloque no trae ruta: solo nombres inequívocos."""
+    upper = code.upper()
+    if lang in ("sql", "postgresql", "mysql", "sqlite") or "CREATE TABLE" in upper:
+        if "CREATE TABLE" in upper or "ALTER TABLE" in upper:
+            return "schema.sql"
+        if "INSERT INTO" in upper:
+            return "seed.sql"
+    if lang in ("ts", "typescript"):
+        m = re.search(r"export\s+class\s+(\w+?)(Component|Service|Guard|Interceptor|Pipe|Directive)\b", code)
+        if m:
+            return f"{_kebab(m.group(1))}.{m.group(2).lower()}.ts"
+    return None
+
+
 def python_destination(raw_name: str) -> str:
     """Ruta destino de un archivo Python/requirements del API FastAPI, siempre bajo api/."""
     parts = [p for p in raw_name.replace("\\", "/").split("/") if p not in ("", ".")]
@@ -359,146 +428,98 @@ def python_destination(raw_name: str) -> str:
         return "/".join(parts)
     if len(parts) > 1 and parts[0] in ("app", "tests"):
         return "api/" + "/".join(parts)
-    if name == "requirements.txt":
-        return "api/requirements.txt"
+    if re.fullmatch(r"requirements[\w.\-]*\.txt", name) or name in PYTHON_PROJECT_FILES:
+        return f"api/{name}"
     if name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py"):
         return f"api/tests/{name}"
     return f"api/app/{name}"
 
 
+def code_destination(raw_name: str) -> str | None:
+    """Ruta bajo output/ para un archivo; None si no corresponde a ningún proyecto."""
+    clean = raw_name.strip().strip("`\"'").replace("\\", "/")
+    parts = [p for p in clean.split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    if parts[0] == "output" and len(parts) > 1:
+        parts = parts[1:]
+    path, name = "/".join(parts), parts[-1]
+    ext = name.rsplit(".", 1)[-1].lower()
+    if "frontend-angular" in parts:
+        return "/".join(parts[parts.index("frontend-angular"):])
+    if path.startswith(KNOWN_ROOTS):
+        return path
+    if ext == "py" or re.fullmatch(r"requirements[\w.\-]*\.txt", name) or name in PYTHON_PROJECT_FILES:
+        return python_destination(path)
+    if ext == "sql":
+        return f"db/{name}"
+    if ext in ("ts", "html", "css", "scss"):
+        if parts[0] == "src":
+            return "frontend-angular/" + path
+        if parts[0] == "app":
+            return "frontend-angular/src/" + path
+        # Nombre sin carpeta: todo en src/app/ para que los imports relativos
+        # entre archivos sin carpeta ('./x.service') sigan resolviendo.
+        return f"frontend-angular/src/app/{name}"
+    return None  # json/yaml/txt sueltos: ambiguos, no se adivinan
+
+
 def extract_and_save_code(text) -> list[str]:
     """Extrae bloques de código del output del LLM y los guarda en sus carpetas correspondientes."""
-    text_str = str(getattr(text, "raw", text) or "")
-    saved = []
-    seen_paths = set()
+    text_str = _unwrap_markdown(str(getattr(text, "raw", text) or ""))
+    files: dict[str, str] = {}
+    skipped: list[str] = []
 
-    # Patrón para bloques ``` con o sin lenguaje
-    code_block_pattern = re.compile(
-        r"(?:(?:archivo|file|fichero|clase|class|componente)?[:\s*#/-]*[`\"]?([a-zA-Z0-9_.\-/]+\.(?:java|py|ts|html|css|sql|xml|properties|txt))[`\"]?[^\n]*\n)?"
-        r"```(?:[a-zA-Z0-9_\-]+)?\n(.*?)```",
-        re.DOTALL | re.IGNORECASE,
-    )
-
-    for m in code_block_pattern.finditer(text_str):
-        name = m.group(1)
-        code = m.group(2).strip()
-        if not code:
+    for block in _parse_code_blocks(text_str):
+        code, lang, info = block["body"], block["lang"], block["info"]
+        if not code.strip():
             continue
 
-        target_name = name
-
-        # 1. Buscar nombre en las primeras líneas del bloque de código (incluyendo rutas con slashes)
-        if not target_name:
-            lines = code.split("\n")[:5]
-            for l in lines:
-                m_line = re.search(
-                    r"(?:(?:\/\/|\/\*|#|<!--|--)\s*|\b)([a-zA-Z0-9_.\-/]+\.(?:java|py|ts|html|css|sql|xml|properties|txt))\b",
-                    l,
-                    re.IGNORECASE,
-                )
-                if m_line:
-                    target_name = m_line.group(1)
-                    break
-
-        # 2. Heurística según el contenido del código si no se detectó nombre explícito
-        if not target_name:
-            m_java = re.search(r"public\s+(?:class|interface|record|enum)\s+(\w+)", code)
-            if m_java:
-                target_name = f"{m_java.group(1)}.java"
-            elif "CREATE TABLE" in code.upper():
-                target_name = "schema.sql"
-            elif "INSERT INTO" in code.upper():
-                target_name = "seed.sql"
-            elif re.search(r"export\s+class\s+(\w+Component)", code) or "@Component" in code:
-                target_name = "login.component.ts"
-            elif re.search(r"export\s+class\s+(\w+Service)", code) or ("@Injectable" in code and "service" in code.lower()):
-                target_name = "auth.service.ts"
-            elif re.search(r"export\s+class\s+(\w+Guard)", code) or "CanActivate" in code:
-                target_name = "auth.guard.ts"
-            elif "HttpInterceptor" in code or "Interceptor" in code:
-                target_name = "auth.interceptor.ts"
-            elif "export interface" in code or "export type" in code:
-                target_name = "models.ts"
-            elif "<form" in code.lower() or ("<button" in code.lower() and "<div" in code.lower()):
-                target_name = "login.component.html"
-
-        if not target_name:
+        # 1. Comentario de ruta en la primera línea no vacía del bloque.
+        first = next((l for l in code.split("\n") if l.strip()), "")
+        m = _PATH_COMMENT.match(first)
+        name = m.group(1) if m else None
+        from_comment = name is not None
+        # 2. Ruta en el info string del fence (```python title="api/app/x.py").
+        if not name and info:
+            m = _FENCE_ATTR.search(info) or _FENCE_BARE_PATH.search(info.split(None, 1)[-1] if " " in info else "")
+            name = m.group(1) if m else None
+        # Los comandos y árboles de carpetas nunca son archivos.
+        if not name and (lang in SHELL_LANGS or re.search(r"[├└│]", code)):
+            continue
+        # 3. Línea-título justo antes del bloque (no cualquier frase con una ruta).
+        if not name and block["prev"]:
+            m = _PATH_HEADING.match(block["prev"])
+            name = m.group(1) if m else None
+        # 4. Contenido inequívoco (SQL, clases Angular).
+        if not name:
+            name = _guess_name(lang, code)
+        if not name:
+            if lang in ("python", "py", "typescript", "ts", "html", "css", "scss", "sql"):
+                skipped.append(f"bloque {lang} sin ruta (primera línea: {first.strip()[:60]!r})")
+            elif lang in ("java", "kotlin", "csharp", "cs", "xml"):
+                skipped.append(f"bloque {lang} ignorado: el stack es FastAPI + Angular")
             continue
 
-        # Extraer solo el nombre base del archivo (el Python conserva su ruta bajo api/)
-        raw_name = target_name.strip()
-        target_name = Path(raw_name).name
-
-        # Mapeo a ruta destino
-        dest_rel = FILE_MAP.get(target_name)
-        if not dest_rel and (target_name.endswith(".py") or target_name == "requirements.txt"):
-            dest_rel = python_destination(raw_name)
+        dest_rel = code_destination(name)
         if not dest_rel:
-            lname = target_name.lower()
-            if target_name.endswith(".java"):
-                if "test" in lname or "@test" in code.lower():
-                    dest_rel = f"backend-quarkus/src/test/java/pe/bcp/login/{target_name}"
-                elif "service" in lname:
-                    dest_rel = f"backend-quarkus/src/main/java/pe/bcp/login/service/{target_name}"
-                elif "resource" in lname or "controller" in lname or "@path" in code.lower():
-                    dest_rel = f"backend-quarkus/src/main/java/pe/bcp/login/resource/{target_name}"
-                elif "repository" in lname or "dao" in lname:
-                    dest_rel = f"backend-quarkus/src/main/java/pe/bcp/login/repository/{target_name}"
-                elif "request" in lname or "response" in lname or "dto" in lname:
-                    dest_rel = f"backend-quarkus/src/main/java/pe/bcp/login/dto/{target_name}"
-                elif "model" in lname or "entity" in lname or "@entity" in code.lower():
-                    dest_rel = f"backend-quarkus/src/main/java/pe/bcp/login/model/{target_name}"
-                else:
-                    # Por defecto clasificar como modelo de dominio
-                    dest_rel = f"backend-quarkus/src/main/java/pe/bcp/login/model/{target_name}"
-            elif target_name.endswith(".ts"):
-                if "interceptor" in lname:
-                    dest_rel = f"frontend-angular/src/app/core/{target_name}"
-                elif "guard" in lname:
-                    dest_rel = f"frontend-angular/src/app/auth/{target_name}"
-                elif "service" in lname:
-                    dest_rel = f"frontend-angular/src/app/auth/{target_name}"
-                elif "component" in lname:
-                    dest_rel = f"frontend-angular/src/app/auth/{target_name}"
-                else:
-                    dest_rel = f"frontend-angular/src/app/auth/{target_name}"
-            elif target_name.endswith(".html"):
-                dest_rel = f"frontend-angular/src/app/auth/{target_name}"
-            elif target_name.endswith(".css"):
-                dest_rel = f"frontend-angular/src/app/auth/{target_name}"
-            elif target_name.endswith(".sql"):
-                dest_rel = f"db/{target_name}"
-            elif target_name.endswith(".properties"):
-                dest_rel = f"backend-quarkus/src/main/resources/{target_name}"
-            elif target_name == "pom.xml":
-                dest_rel = f"backend-quarkus/{target_name}"
+            skipped.append(f"{name}: no corresponde a api/, frontend-angular/ ni db/")
+            continue
+        if from_comment and dest_rel.endswith(".json"):
+            code = code.replace(first, "", 1)  # JSON no admite el comentario de ruta
+        if dest_rel in files:
+            print(f"  ↺ {dest_rel} aparece más de una vez: se conserva la última versión")
+        files[dest_rel] = code.strip("\n") + "\n"
 
-        if dest_rel and dest_rel not in seen_paths:
-            seen_paths.add(dest_rel)
-
-            # Normalización automática para garantizar compilabilidad directa
-            if dest_rel.endswith("models.ts"):
-                code = re.sub(r'^(interface\s+)', r'export \1', code, flags=re.MULTILINE)
-            elif dest_rel.endswith(".java") and not re.search(r'^\s*package\s+', code, flags=re.MULTILINE):
-                if "/model/" in dest_rel:
-                    pkg = "pe.bcp.login.model"
-                elif "/service/" in dest_rel:
-                    pkg = "pe.bcp.login.service"
-                elif "/resource/" in dest_rel:
-                    pkg = "pe.bcp.login.resource"
-                elif "/repository/" in dest_rel:
-                    pkg = "pe.bcp.login.repository"
-                elif "/dto/" in dest_rel:
-                    pkg = "pe.bcp.login.dto"
-                else:
-                    pkg = "pe.bcp.login"
-                code = f"package {pkg};\n\n" + code
-
-            dest = OUTPUT_DIR / dest_rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(code, encoding="utf-8")
-            saved.append(dest_rel)
-            print(f"  💾 Guardado: {dest_rel}")
+    saved = []
+    for dest_rel, code in files.items():
+        dest = OUTPUT_DIR / dest_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(code, encoding="utf-8")
+        saved.append(dest_rel)
+        print(f"  💾 Guardado: {dest_rel}")
+    for note in skipped:
+        print(f"  ⚠ No se guardó {note}")
 
     if not saved:
         print("  ⚠ Advertencia: no se detectaron archivos de código fuente para extraer en este paso.")
@@ -566,7 +587,13 @@ class StepLoadingSpinner:
 
 
 def run_step(agent, task) -> str:
-    """Ejecuta un mini-Crew de un solo agente y retorna el output en texto."""
+    """Ejecuta un mini-Crew de un solo agente y retorna el output en texto.
+
+    Ctrl-C cancela la llamada en curso (CrewAI la ejecuta en otro hilo, así que
+    se avisa al runtime de Copilot); un segundo Ctrl-C sale de inmediato.
+    """
+    # Sin reintentos automáticos: ante un error decide la persona (r/n).
+    agent.max_retry_limit = 0
     mini_crew = Crew(
         agents=[agent],
         tasks=[task],
@@ -574,8 +601,30 @@ def run_step(agent, task) -> str:
         verbose=True,
         tracing=False,
     )
-    with StepLoadingSpinner(f"Generando con {agent.llm.model}..."):
-        result = mini_crew.kickoff()
+    copilot_runtime.CANCEL.clear()
+
+    def on_sigint(_signum, _frame):
+        if copilot_runtime.CANCEL.is_set():
+            print("\n⏹  Saliendo sin esperar a Copilot.", flush=True)
+            copilot_runtime.kill_active_runtimes()
+            os._exit(130)
+        copilot_runtime.CANCEL.set()
+        print("\n⏹  Cancelando el paso... (Ctrl-C otra vez para salir de inmediato)", flush=True)
+
+    in_main = threading.current_thread() is threading.main_thread()
+    previous = signal.signal(signal.SIGINT, on_sigint) if in_main else None
+    try:
+        with StepLoadingSpinner(f"Generando con {agent.llm.model}..."):
+            result = mini_crew.kickoff()
+    except BaseException:
+        if copilot_runtime.CANCEL.is_set():
+            raise copilot_runtime.CopilotCancelled("Paso cancelado por la persona (Ctrl-C).") from None
+        raise
+    finally:
+        if in_main:
+            signal.signal(signal.SIGINT, previous)
+    if copilot_runtime.CANCEL.is_set():
+        raise copilot_runtime.CopilotCancelled("Paso cancelado por la persona (Ctrl-C).")
 
     # Pausa para permitir que los callbacks y paneles asíncronos de CrewAI terminen de pintar en consola
     time.sleep(1.2)
@@ -720,7 +769,8 @@ def hitl_approve(step_name: str, output: str) -> tuple[str, str]:
         try:
             raw = input("\n👉 Ingresa tu opción [s/r/n] y presiona Enter: ").strip().lower()
         except EOFError:
-            return "s", ""
+            print("\n❌ Entrada cerrada: no se puede aprobar sin una persona. Deteniendo.")
+            return "n", ""
         except KeyboardInterrupt:
             print("\n❌ Interrupción por teclado.")
             return "n", ""
@@ -737,16 +787,55 @@ def hitl_approve(step_name: str, output: str) -> tuple[str, str]:
             return "n", ""
         if choice in ("r", "retry", "reintentar") or choice.endswith("r"):
             print("\n💬 [Feedback Opcional] Escribe instrucciones adicionales para el agente")
-            feedback = input("   (o presiona Enter para reintentar sin cambios): ").strip()
+            try:
+                feedback = input("   (o presiona Enter para reintentar sin cambios): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                feedback = ""
             return "r", feedback
 
         print("\n  ✗ Opción inválida. Por favor ingresa 's' para sí, 'r' para reintentar o 'n' para rechazar.")
 
 
 
+def ask(prompt: str) -> str:
+    """input() que termina el flujo con un mensaje claro si la entrada se cierra."""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n❌ Entrada cancelada. Deteniendo el flujo; los pasos aprobados quedan en el checkpoint.")
+        raise SystemExit(1)
+
+
+def handle_step_error(step_label: str, error: BaseException) -> tuple[str, str]:
+    """Muestra el error del paso y deja decidir: reintentar o detener."""
+    box_line = "=" * 65
+    if isinstance(error, KeyboardInterrupt):
+        reason = "cancelado con Ctrl-C"
+    else:
+        reason = f"{type(error).__name__}: {error}"
+    print(f"""
+{box_line}
+ ⚠  El paso {step_label} no terminó: {reason}
+{box_line}
+ [r] = Reintentar este paso (permite ingresar feedback opcional)
+ [n] = Detener (los pasos aprobados quedan guardados en el checkpoint)
+{box_line}""")
+    while True:
+        choice = ask("\n👉 Ingresa tu opción [r/n] y presiona Enter: ").lower()
+        if choice in ("r", "retry", "reintentar", "s", "si", "sí"):
+            try:
+                feedback = input("   Feedback opcional (Enter para reintentar sin cambios): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                feedback = ""
+            return "r", feedback
+        if choice in ("n", "no"):
+            return "n", ""
+        print("  ✗ Opción inválida. Ingresa 'r' o 'n'.")
+
+
 # ── Contexto acumulado ─────────────────────────────────────────────
 
-def _ctx_snippet(text: str, max_chars: int = 40000) -> str:
+def _ctx_snippet(text: str, max_chars: int = 80000) -> str:
     """Recorta el output a max_chars para inyectarlo como contexto."""
     text_clean = str(text or "").strip()
     if len(text_clean) <= max_chars:
@@ -800,7 +889,7 @@ def main():
             icon = "⚫" if proj.get("closed") else "🟢"
             print(f"  {i}. {icon} {proj.get('title', '(sin título)')}")
         while True:
-            sel = input(f"\nSelecciona el número de proyecto [1-{len(projects)}]: ").strip()
+            sel = ask(f"\nSelecciona el número de proyecto [1-{len(projects)}]: ")
             if sel.isdigit() and 1 <= int(sel) <= len(projects):
                 selected_project = projects[int(sel) - 1]
                 break
@@ -819,7 +908,7 @@ def main():
         print(f"  {i}. {icon} {num}{item.get('title', '(sin título)')}")
 
     while True:
-        sel = input(f"\nSelecciona el número de feature [1-{len(backlog)}]: ").strip()
+        sel = ask(f"\nSelecciona el número de feature [1-{len(backlog)}]: ")
         if sel.isdigit() and 1 <= int(sel) <= len(backlog):
             selected_item = backlog[int(sel) - 1]
             break
@@ -837,7 +926,7 @@ def main():
     ckpt_feature = checkpoint.get("feature_title")
     if ckpt_feature and ckpt_feature != feature["title"]:
         print(f"\n⚠  El checkpoint existente es para '{ckpt_feature}'.")
-        ans = input("¿Ignorar checkpoint y empezar desde cero? [s/n]: ").strip().lower()
+        ans = ask("¿Ignorar checkpoint y empezar desde cero? [s/n]: ").lower()
         if ans == "s":
             steps_state = {}
             checkpoint  = {"steps": {}}
@@ -859,13 +948,6 @@ def main():
         if step_data.get("status") == "approved":
             approved_outputs[step_key] = step_data.get("output", "")
 
-    # ── Enriquecer backstory del Chapter con brief del feature ────────
-    architect_agent.backstory += HEX_PROMPT_PREFIX + (
-        f"\n\n## Feature brief\n"
-        f"**{feature['title']}**\n\n{feature['description']}\n\n"
-        f"**Criterios de aceptación:** {', '.join(feature['acceptance_criteria'])}"
-    )
-
     # ── Definición de pasos ───────────────────────────────────────────
     # (key, label, agent, spec_filename, extraer_código)
 
@@ -878,6 +960,8 @@ def main():
     print("Pasos: " + " → ".join(step[1] for step in steps))
     print("=" * 60)
 
+    generated_files: list[str] = []
+
     # ── Loop HITL ─────────────────────────────────────────────────────
     for step_key, step_label, agent, spec_file, do_code in steps:
 
@@ -887,7 +971,7 @@ def main():
             if do_code:
                 saved_out = steps_state[step_key].get("output", "")
                 if saved_out:
-                    extract_and_save_code(saved_out)
+                    generated_files.extend(extract_and_save_code(saved_out))
             continue
 
         print(f"\n{'─'*60}")
@@ -919,8 +1003,16 @@ def main():
                     f"Por favor atiende y corrige con máxima prioridad las observaciones del usuario indicadas arriba.\n"
                 )
 
-            # Ejecutar mini-Crew
-            output = run_step(agent, task)
+            # Ejecutar mini-Crew; un error o Ctrl-C no tumba el flujo
+            try:
+                output = run_step(agent, task)
+            except (Exception, KeyboardInterrupt) as error:
+                decision, user_feedback = handle_step_error(step_label, error)
+                if decision == "n":
+                    print(f"\n❌ {step_label} detenido tras un error. Vuelve a ejecutar para retomarlo.")
+                    raise SystemExit(1)
+                print(f"\n🔄 Reintentando {step_label}...")
+                continue
 
             # HITL
             decision, user_feedback = hitl_approve(step_label, output)
@@ -930,7 +1022,7 @@ def main():
                 print(f"\n✅ {step_label} aprobado. Guardando artefactos...")
                 save_spec(spec_file, output)
                 if do_code:
-                    extract_and_save_code(output)
+                    generated_files.extend(extract_and_save_code(output))
                 approved_outputs[step_key] = output
                 steps_state[step_key] = {"status": "approved", "output": output}
                 checkpoint["steps"] = steps_state
@@ -966,6 +1058,61 @@ def main():
     print("=" * 60)
     print("\nVEREDICTO del Chapter (extracto):")
     print(chapter_text[-500:] if len(chapter_text) > 500 else chapter_text)
+
+    publish_step(checkpoint, feature, selected_item.get("number"), steps, generated_files, chapter_text)
+
+
+def publish_step(checkpoint: dict, feature: dict, issue_number, steps, generated_files, chapter_text) -> None:
+    """Último paso: PR en borrador a <GITHUB_OWNER>/ai-labs, solo con aprobación humana."""
+    repo = publish_pr.target_repo()
+    print("\n" + "─" * 60)
+    print("▶ PASO: Pull request")
+    print("─" * 60)
+    if checkpoint.get("pr", {}).get("url"):
+        print(f"✅ PR ya abierto en una ejecución anterior: {checkpoint['pr']['url']}")
+        return
+    if not repo:
+        print("  ⚠ Define GITHUB_OWNER en .env para abrir el PR en <owner>/ai-labs. Paso omitido.")
+        return
+
+    slug = publish_pr.slugify(feature["title"])
+    files = publish_pr.plan_files(OUTPUT_DIR, generated_files, [step[3] for step in steps], slug)
+    verdict = publish_pr.verdict(chapter_text)
+    box_line = "=" * 65
+    print(f"  Repo destino : {repo} (PR en borrador)")
+    print(f"  Veredicto    : {verdict}")
+    print(f"  Archivos ({len(files)}):")
+    for path in files:
+        print(f"    · {path}")
+    if verdict != "APROBADO":
+        print(f"\n  ⚠ El Chapter no aprobó ({verdict}). Puedes abrir el PR igualmente para revisión humana.")
+    print(f"""
+{box_line}
+ 🔔 ACCIÓN REQUERIDA — Aprobación humana para abrir el PR
+{box_line}
+ [s] = Abrir el PR en {repo}
+ [n] = No abrir el PR (puedes volver a ejecutar más tarde)
+{box_line}""")
+    while True:
+        try:
+            choice = input("\n👉 ¿Abrir el PR? [s/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "n"
+        if choice in ("s", "si", "sí", "y", "yes"):
+            break
+        if choice in ("n", "no"):
+            print("  PR no abierto.")
+            return
+        print("  ✗ Ingresa 's' o 'n'.")
+
+    try:
+        url = publish_pr.open_pr(repo, feature, issue_number, files, chapter_text)
+    except publish_pr.PublishError as error:
+        print(f"\n❌ No se pudo abrir el PR: {error}")
+        return
+    print(f"\n✅ PR abierto: {url}")
+    checkpoint["pr"] = {"url": url, "repo": repo}
+    save_checkpoint(checkpoint)
 
 
 if __name__ == "__main__":

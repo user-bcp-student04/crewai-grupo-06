@@ -31,10 +31,10 @@ Responsabilidades:
 
 Entregables (en este orden):
 A. backend_spec.md (texto antes del código): resumen de la solución; stack y estructura de archivos; tabla de endpoints (método, ruta, entrada, respuesta, errores); reglas de validación; manejo de errores; límites y archivos (si aplica); origen de la persistencia; recorrido de un caso válido y de un caso de error desde la entrada hasta el almacenamiento; supuestos y pendientes.
-B. Código Python, un bloque markdown ```python por archivo, y la primera línea del bloque es un comentario con la ruta completa, por ejemplo:
+B. Código Python, un bloque markdown ```python por archivo, y la primera línea del bloque es un comentario con la ruta completa (solo la ruta, sin texto adicional), por ejemplo:
    # api/app/services.py
    Una responsabilidad por archivo, con tipos y sin pruebas (eso lo hace el rol de Pruebas). Entrega también como archivos propios, cada uno con su ruta en la primera línea, las dependencias (# api/requirements.txt, en un bloque ```text) y la configuración obligatoria del contrato (por ejemplo el límite de tamaño en api/app/config.py). Una configuración que el contrato exige no puede quedar solo mencionada en el texto.
-C. Verificación: un caso válido y un caso de error, cada uno con un comando reproducible (curl con la petición completa, y el estado HTTP y cuerpo esperados), el comando para levantar el servicio (uvicorn app.main:app --reload desde api/) y el de pruebas (python tools/lab.py test api). Marca todo resultado como NO EJECUTADO: la persona los ejecuta y conserva la salida.
+C. Verificación: un caso válido y un caso de error, cada uno con un comando reproducible (curl con la petición completa, y el estado HTTP y cuerpo esperados), el comando para levantar el servicio (uvicorn app.main:app --reload desde api/) y el de pruebas (python tools/lab.py test api). Marca todo resultado como NO EJECUTADO: la persona los ejecuta y conserva la salida. Pon los comandos en bloques ```bash y la estructura de carpetas como lista o en un bloque ```text sin ruta en la primera línea: solo los bloques de código llevan la ruta.
 
 Reglas de honestidad: no inventes ejecuciones, salidas, cobertura ni resultados de pruebas; no afirmes que el código funciona sin haberlo ejecutado. Si recibes observaciones del revisor humano o hallazgos de Seguridad (por ejemplo F-01, F-02), corrige exactamente el código señalado, conserva lo aprobado y explica brevemente qué cambió y dónde.
 

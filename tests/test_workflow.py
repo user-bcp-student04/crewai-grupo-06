@@ -92,6 +92,7 @@ class WorkflowTests(unittest.TestCase):
                 patch.object(app, "get_feature_from_item", return_value=FEATURE)
             )
             stack.enter_context(patch.object(app, "run_step", side_effect=run))
+            stack.enter_context(patch.object(app.publish_pr, "target_repo", return_value=None))
             data_decisions = iter([("r", "Add a uniqueness constraint"), ("n", "")])
             def approve(label, result):
                 if interrupt_data and label == "Datos y persistencia":
